@@ -35,6 +35,7 @@ class AutoTGManager(LocaleMixin):
         self.db: 'DatabaseManager' = channel.db
 
         self.tg_config: dict = self.flag('auto_manage_tg_config')
+        self.bot_name: str = self.tg_config.get('bot_name')
         if self.tg_config.get('auto_manage_tg') and \
                 self.tg_config.get('tg_api_id') and \
                 self.tg_config.get('tg_api_hash'):
@@ -43,7 +44,7 @@ class AutoTGManager(LocaleMixin):
                                              api_hash=self.tg_config.get('tg_api_hash'),
                                              workdir=ehforwarderbot.utils.get_data_path(channel.channel_id))
             self.tg_loop = asyncio.new_event_loop()
-            self.tg_loop.run_until_complete(self._start_tg_client_if_needed())
+            #self.tg_loop.run_until_complete(self._start_tg_client_if_needed())
 
     def create_tg_group_if_needed(self, chat: ETMChatType) -> Optional[utils.EFBChannelChatIDStr]:
         if not self.tg_client:
@@ -125,7 +126,7 @@ class AutoTGManager(LocaleMixin):
         tg_chat = None
         try:
             await self._start_tg_client_if_needed()
-            _tg_chat = await self.tg_client.create_group(chat.chat_title, self.bot.me.id)
+            _tg_chat = await self.tg_client.create_group(chat.chat_title, self.bot_name)
             bot = await self.tg_client.resolve_peer(self.bot.me.id)
             _raw_chat = await self.tg_client.resolve_peer(_tg_chat.id)
             await self.tg_client.invoke(
