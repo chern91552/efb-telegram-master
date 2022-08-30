@@ -644,6 +644,8 @@ Config Example:
         auto_archive_create_tg_group: [2, 3, 4]
         # automatically link MQ chat to this TG group
         mq_auto_link_group_id: '-xxxxxxxx'
+        # bot_name, in my case, it doesn't work when use bot id to create a group, so add a new configuration here is one choice
+        bot_name: '@bot_name'
 
 Network configuration: timeout tweaks
 -------------------------------------
