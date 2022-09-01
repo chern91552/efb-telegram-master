@@ -77,15 +77,18 @@ class AutoTGManager(LocaleMixin):
             if not tg_chat:
                 return None
             self.logger.debug("Auto create telegram Group Named: [%s]", tg_chat.title)
-            chat.link(self.channel.channel_id, tg_chat.id, True)
-            self._update_chat_image(tg_chat)
-            tg_chats = self.db.get_chat_assoc(slave_uid=utils.chat_id_to_str(chat=chat))
-            assert len(tg_chats) == 1
-            return tg_chats[0]
         except Exception:
             self.logger.exception("Unknown error caught when creating TG group.")
-        finally:
-            return None
+        #finally:
+        #    return None
+
+        chat.link(self.channel.channel_id, tg_chat.id, True)
+        self._update_chat_image(tg_chat)
+        tg_chats = self.db.get_chat_assoc(slave_uid=utils.chat_id_to_str(chat=chat))
+        tg_chat = None
+        if len(tg_chats) == 1:
+            tg_chat = tg_chats[0]
+        return tg_chat
 
     def _update_chat_image(self, tg_chat: pyrogram.types.Chat):
         picture: Optional[IO] = None
