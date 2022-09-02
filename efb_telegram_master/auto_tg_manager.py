@@ -57,7 +57,7 @@ class AutoTGManager(LocaleMixin):
             if not mq_tg_group_id or not len(mq_tg_group_id):
                 return None
             chat.link(self.channel.channel_id, mq_tg_group_id, True)
-            tg_chats = self.db.get_chat_assoc(slave_uid=utils.chat_id_to_str(chat_uid=mq_tg_group_id))
+            tg_chats = self.db.get_chat_assoc(slave_uid=utils.chat_id_to_str(chat=chat))
             if len(tg_chats) == 1:
                 return tg_chats[0]
             else:
