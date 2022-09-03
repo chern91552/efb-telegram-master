@@ -79,8 +79,7 @@ class AutoTGManager(LocaleMixin):
             self.logger.debug("Auto create telegram Group Named: [%s]", tg_chat.title)
         except Exception:
             self.logger.exception("Unknown error caught when creating TG group.")
-        #finally:
-        #    return None
+            return None
 
         chat.link(self.channel.channel_id, tg_chat.id, True)
         self._update_chat_image(tg_chat)
@@ -141,6 +140,7 @@ class AutoTGManager(LocaleMixin):
             await self._add_tg_group_to_folder_if_needed(chat, tg_chat)
             await self._archive_tg_chat_if_needed(chat, tg_chat)
             await self._mute_tg_group_if_needed(chat, tg_chat)
+            await self._stop_tg_client()
         except Exception:
             self.logger.exception("Unknown error caught when creating TG group.")
         return tg_chat
@@ -148,6 +148,10 @@ class AutoTGManager(LocaleMixin):
     async def _start_tg_client_if_needed(self):
         if not self.tg_client.is_connected:
             await self.tg_client.start()
+
+    async def _stop_tg_client(self):
+        if self.tg_client.is_connected:
+            await self.tg_client.stop()
 
     async def _add_tg_group_to_folder_if_needed(self, chat: ETMChatType, tg_chat: pyrogram.types.Chat):
         try:
