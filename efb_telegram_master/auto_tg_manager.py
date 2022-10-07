@@ -4,6 +4,7 @@ from typing import Tuple, Optional, TYPE_CHECKING, List, IO, Union
 import asyncio
 import logging
 import threading
+from time import sleep
 
 import ehforwarderbot
 import pyrogram
@@ -84,6 +85,7 @@ class AutoTGManager(LocaleMixin):
             return None
 
         chat.link(self.channel.channel_id, tg_chat.id, True)
+        sleep(10)
         self._update_chat_image(tg_chat)
         tg_chats = self.db.get_chat_assoc(slave_uid=utils.chat_id_to_str(chat=chat))
         tg_chat = None
@@ -142,7 +144,7 @@ class AutoTGManager(LocaleMixin):
             await self._add_tg_group_to_folder_if_needed(chat, tg_chat)
             await self._archive_tg_chat_if_needed(chat, tg_chat)
             await self._mute_tg_group_if_needed(chat, tg_chat)
-            await self._stop_tg_client()
+            #await self._stop_tg_client()
         except Exception:
             self.logger.exception("Unknown error caught when creating TG group.")
         return tg_chat
