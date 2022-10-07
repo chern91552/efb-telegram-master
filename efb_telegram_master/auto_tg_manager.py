@@ -3,6 +3,7 @@ import io
 from typing import Tuple, Optional, TYPE_CHECKING, List, IO, Union
 import asyncio
 import logging
+import threading
 
 import ehforwarderbot
 import pyrogram
@@ -26,6 +27,7 @@ class AutoTGManager(LocaleMixin):
     This is a wrapper of pyrogram which perform as a Telegram Client.
     Used to automatically create new telegram group.
     """
+
 
     def __init__(self, channel: 'TelegramChannel'):
         self.channel: 'TelegramChannel' = channel
