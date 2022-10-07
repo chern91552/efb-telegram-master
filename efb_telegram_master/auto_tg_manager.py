@@ -170,16 +170,21 @@ class AutoTGManager(LocaleMixin):
                     return result[0]
                 return None
 
-            target_folder = Optional[pyrogram.raw.base.DialogFilter]
+            target_folder_config = ''
             if chat.vendor_specific.get('is_mp') and 4 in folder_config.keys():
-                target_folder = get_target_folder(folder_config[4])
+                target_folder_config = folder_config[4]
             elif isinstance(chat, ETMPrivateChat) and 1 in folder_config.keys():
-                target_folder = get_target_folder(folder_config[1])
+                target_folder_config = folder_config[1]
             elif isinstance(chat, ETMGroupChat) and 2 in folder_config.keys():
-                target_folder = get_target_folder(folder_config[2])
+                target_folder_config = folder_config[2]
             elif isinstance(chat, ETMSystemChat) and 3 in folder_config.keys():
-                target_folder = get_target_folder(folder_config[3])
-
+                target_folder_config = folder_config[3]
+            
+            if target_folder_config:
+                return None
+            
+            target_folder = Optional[pyrogram.raw.base.DialogFilter]
+            target_folder = get_target_folder(target_folder_config)
             if target_folder:
                 peer = await self.tg_client.resolve_peer(tg_chat.id)
                 target_folder.include_peers.append(peer)
