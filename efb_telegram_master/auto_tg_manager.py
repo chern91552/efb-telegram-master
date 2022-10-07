@@ -171,13 +171,13 @@ class AutoTGManager(LocaleMixin):
                 return None
 
             target_folder = Optional[pyrogram.raw.base.DialogFilter]
-            if chat.vendor_specific.get('is_mp') and folder_config[4]:
+            if chat.vendor_specific.get('is_mp') and 4 in folder_config.keys():
                 target_folder = get_target_folder(folder_config[4])
-            elif isinstance(chat, ETMPrivateChat) and folder_config[1]:
+            elif isinstance(chat, ETMPrivateChat) and 1 in folder_config.keys():
                 target_folder = get_target_folder(folder_config[1])
-            elif isinstance(chat, ETMGroupChat) and folder_config[2]:
+            elif isinstance(chat, ETMGroupChat) and 2 in folder_config.keys():
                 target_folder = get_target_folder(folder_config[2])
-            elif isinstance(chat, ETMSystemChat) and folder_config[3]:
+            elif isinstance(chat, ETMSystemChat) and 3 in folder_config.keys():
                 target_folder = get_target_folder(folder_config[3])
 
             if target_folder:
