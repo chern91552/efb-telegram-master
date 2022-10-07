@@ -178,7 +178,7 @@ class AutoTGManager(LocaleMixin):
             elif isinstance(chat, ETMSystemChat) and 3 in folder_config.keys():
                 target_folder_config = folder_config[3]
             
-            if target_folder_config:
+            if not target_folder_config:
                 return None
             
             target_folder = Optional[pyrogram.raw.base.DialogFilter]
