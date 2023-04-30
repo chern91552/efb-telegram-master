@@ -50,8 +50,12 @@ class AutoTGManager(LocaleMixin):
             #self.tg_loop.run_until_complete(self._start_tg_client_if_needed())
 
     def create_tg_group_if_needed(self, chat: ETMChatType) -> Optional[utils.EFBChannelChatIDStr]:
-        if not self.tg_client:
+        try:
+            if not tg_chat:
+                return None
+        except Exception:
             return None
+        
 
         auto_create_types = self.tg_config.get('auto_create_tg_group', [])
         if chat.vendor_specific.get('is_mp') and self.tg_config.get('mq_auto_link_group_id'):
