@@ -38,6 +38,8 @@ class AutoTGManager(LocaleMixin):
         self.db: 'DatabaseManager' = channel.db
 
         self.tg_config: dict = self.flag('auto_manage_tg_config')
+        self.logger.debug("self.tg_config.get('tg_api_id'): [%s]", self.tg_config.get('tg_api_id'))
+        self.logger.debug("self.tg_config.get('tg_api_hash'): [%s]", self.tg_config.get('tg_api_hash'))
         self.bot_name: str = self.tg_config.get('bot_name')
         if self.tg_config.get('auto_manage_tg') and \
                 self.tg_config.get('tg_api_id') and \
