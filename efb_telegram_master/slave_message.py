@@ -244,6 +244,7 @@ class SlaveMessageProcessor(LocaleMixin):
         if tg_chats:
             tg_chat = tg_chats[0]
         else:
+            self.logger.debug("start to creat tg group")
             tg_chat = self.auto_tg_manager.create_tg_group_if_needed(msg.chat)
         self.logger.debug("[%s] The message should deliver to %s", xid, tg_chat)
 
