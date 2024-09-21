@@ -44,6 +44,7 @@ class AutoTGManager(LocaleMixin):
         if self.tg_config.get('auto_manage_tg') and \
                 self.tg_config.get('tg_api_id') and \
                 self.tg_config.get('tg_api_hash'):
+             self.logger.debug("self.tg_client start")
             self.tg_client = pyrogram.Client(name='efb_telegram_auto_create_group_client',
                                              api_id=self.tg_config.get('tg_api_id'),
                                              api_hash=self.tg_config.get('tg_api_hash'),
@@ -52,7 +53,9 @@ class AutoTGManager(LocaleMixin):
             #self.tg_loop.run_until_complete(self._start_tg_client_if_needed())
 
     def create_tg_group_if_needed(self, chat: ETMChatType) -> Optional[utils.EFBChannelChatIDStr]:
+        
         try:
+            self.logger.debug('tg_chat: [%s]', tg_chat)
             if not tg_chat:
                 return None
         except Exception:
@@ -63,6 +66,7 @@ class AutoTGManager(LocaleMixin):
         if chat.vendor_specific.get('is_mp') and self.tg_config.get('mq_auto_link_group_id'):
             # 公众号绑定到同一个 TG 群
             mq_tg_group_id = str(self.tg_config.get('mq_auto_link_group_id', ''))
+            self.logger.debug('公众号绑定到同一个 TG 群: [%s]', mq_tg_group_id)
             if not mq_tg_group_id or not len(mq_tg_group_id):
                 return None
             chat.link(self.channel.channel_id, mq_tg_group_id, True)
