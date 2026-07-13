@@ -1,20 +1,40 @@
 # coding=utf-8
 
-import bisect
 import logging
 import threading
 import time
-from collections import defaultdict, deque
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from collections.abc import Coroutine
+from inspect import isawaitable
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING, TypeVar, cast, overload, Literal
 
 import telegram
 import telegram.error
-from telegram.utils.request import Request
+from telegram.request import HTTPXRequest
 
 if TYPE_CHECKING:
-    pass
+    from .bot_manager import AsyncTelegramRuntime, SyncBotFacade
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+@overload
+def _resolve_bot_result(result: Coroutine[Any, Any, T], runtime: 'AsyncTelegramRuntime') -> T:
+    ...
+
+
+@overload
+def _resolve_bot_result(result: T, runtime: Optional['AsyncTelegramRuntime']) -> T:
+    ...
+
+
+def _resolve_bot_result(result: object, runtime: Optional['AsyncTelegramRuntime']) -> object:
+    if isawaitable(result):
+        if runtime is None:
+            raise RuntimeError("Auxiliary bot runtime is not bound.")
+        return runtime.call(cast(Coroutine[Any, Any, object], result))
+    return result
 
 
 class AuxiliaryBot:
@@ -31,51 +51,107 @@ class AuxiliaryBot:
                  request_kwargs: Optional[dict] = None,
                  base_url: Optional[str] = None,
                  base_file_url: Optional[str] = None,
+                 local_mode: bool = False,
                  global_limit: int = 30,
                  global_window: float = 1.0,
                  chat_limit: int = 20,
                  chat_window: float = 60.0):
-        kwargs: Dict[str, Any] = {}
+        self._token = token
+        self._request_kwargs = dict(request_kwargs or {})
+        self._base_kwargs: Dict[str, str] = {}
         if base_url:
-            kwargs['base_url'] = base_url
+            self._base_kwargs['base_url'] = base_url
         if base_file_url:
-            kwargs['base_file_url'] = base_file_url
-        if request_kwargs:
-            kwargs['request'] = Request(**request_kwargs)
+            self._base_kwargs['base_file_url'] = base_file_url
+        self._local_mode = local_mode
 
-        self.bot: telegram.Bot = telegram.Bot(token=token, **kwargs)
+        self.async_bot: telegram.Bot = self._create_bot()
+        self.bot: telegram.Bot | 'SyncBotFacade' = self.async_bot
 
         # Identity (populated by initialize())
         self.bot_id: int = 0
         self.username: str = ""
         self.disabled: bool = False
         self._disable_reason: str = ""
+        self._runtime: Optional['AsyncTelegramRuntime'] = None
 
-        # Rate limiting (same structure as TelegramBotManager)
-        self._rate_limit_lock = threading.Lock()
-        self._global_timestamps: list = []
-        self._chat_timestamps: defaultdict = defaultdict(deque)
-        self.GLOBAL_LIMIT = global_limit
-        self.GLOBAL_WINDOW = global_window
-        self.CHAT_LIMIT = chat_limit
-        self.CHAT_WINDOW = chat_window
+        # Rate limiting — delegates to shared SlidingWindowRateLimiter
+        from .rate_limiter import SlidingWindowRateLimiter
+        self._rate_limiter = SlidingWindowRateLimiter(
+            global_limit=global_limit,
+            global_window=global_window,
+            chat_limit=chat_limit,
+            chat_window=chat_window,
+        )
 
         # Membership cache: chat_id -> (is_member, timestamp)
         self._membership_cache: Dict[int, Tuple[bool, float]] = {}
         self._membership_lock = threading.Lock()
         self._pending_probes: set = set()
+        self._metrics = None
+
+    def _create_bot(self) -> telegram.Bot:
+        request = self._build_request() if self._request_kwargs else None
+        get_updates_request = self._build_request() if self._request_kwargs else None
+        base_url = self._base_kwargs.get('base_url')
+        base_file_url = self._base_kwargs.get('base_file_url')
+        if base_url is not None and base_file_url is not None:
+            return telegram.Bot(
+                token=self._token,
+                base_url=base_url,
+                base_file_url=base_file_url,
+                local_mode=self._local_mode,
+                request=request,
+                get_updates_request=get_updates_request,
+            )
+        if base_url is not None:
+            return telegram.Bot(
+                token=self._token,
+                base_url=base_url,
+                local_mode=self._local_mode,
+                request=request,
+                get_updates_request=get_updates_request,
+            )
+        if base_file_url is not None:
+            return telegram.Bot(
+                token=self._token,
+                base_file_url=base_file_url,
+                local_mode=self._local_mode,
+                request=request,
+                get_updates_request=get_updates_request,
+            )
+        return telegram.Bot(
+            token=self._token,
+            local_mode=self._local_mode,
+            request=request,
+            get_updates_request=get_updates_request,
+        )
+
+    def _build_request(self) -> HTTPXRequest:
+        return HTTPXRequest(
+            read_timeout=cast(Optional[float], self._request_kwargs.get('read_timeout')),
+            write_timeout=cast(Optional[float], self._request_kwargs.get('write_timeout')),
+            connect_timeout=cast(Optional[float], self._request_kwargs.get('connect_timeout')),
+            pool_timeout=cast(Optional[float], self._request_kwargs.get('pool_timeout')),
+            media_write_timeout=cast(Optional[float], self._request_kwargs.get('media_write_timeout')),
+            connection_pool_size=cast(int, self._request_kwargs.get('connection_pool_size', 1)),
+            proxy=cast(Optional[str], self._request_kwargs.get('proxy')),
+            httpx_kwargs=cast(Optional[dict[str, object]], self._request_kwargs.get('httpx_kwargs')),
+            http_version=cast(Literal['1.1', '2.0', '2'], self._request_kwargs.get('http_version') or '1.1'),
+        )
 
     def initialize(self) -> bool:
         """Call get_me() to validate token and cache identity.
         Returns True on success, False on failure (bot is disabled).
         """
         try:
-            me = self.bot.get_me()
+            validation_bot = self._create_bot()
+            me: telegram.User = cast(telegram.User, _resolve_bot_result(validation_bot.get_me(), self._runtime))
             self.bot_id = me.id
             self.username = me.username or ""
             logger.info("Auxiliary bot initialized: @%s (id=%d)", self.username, self.bot_id)
             return True
-        except telegram.error.Unauthorized as e:
+        except telegram.error.Forbidden as e:
             self.disabled = True
             self._disable_reason = str(e)
             logger.error("Failed to initialize auxiliary bot: %s", e)
@@ -86,73 +162,59 @@ class AuxiliaryBot:
             logger.error("Failed to initialize auxiliary bot: %s", e)
             return False
 
-    def _cleanup_old_timestamps(self):
-        """Remove timestamps older than the time window (called under lock)."""
-        current_time = time.time()
-        while self._global_timestamps and self._global_timestamps[0] <= current_time - self.GLOBAL_WINDOW:
-            self._global_timestamps.pop(0)
-        for _chat_id, timestamps in self._chat_timestamps.items():
-            while timestamps and timestamps[0] <= current_time - self.CHAT_WINDOW:
-                timestamps.popleft()
-
     def peek_delay(self, chat_id: int) -> float:
         """Check rate limit delay without reserving a slot. Thread-safe."""
-        with self._rate_limit_lock:
-            current_time = time.time()
-            self._cleanup_old_timestamps()
-
-            # Chat-specific check
-            chat_delay = 0.0
-            chat_timestamps = self._chat_timestamps[chat_id]
-            if len(chat_timestamps) >= self.CHAT_LIMIT - 2:
-                safe_index = len(chat_timestamps) - (self.CHAT_LIMIT - 2)
-                reference_timestamp = chat_timestamps[safe_index]
-                chat_delay = max(0.0, (reference_timestamp + self.CHAT_WINDOW) - current_time)
-
-            candidate_time = current_time + chat_delay
-
-            # Global limit check — use bisect_right for left bound so the
-            # window is half-open (left_bound, candidate_time], preventing an
-            # infinite loop when timestamps cluster on the boundary.
-            while True:
-                left_bound = candidate_time - self.GLOBAL_WINDOW
-                idx = bisect.bisect_right(self._global_timestamps, left_bound)
-                right_idx = bisect.bisect_right(self._global_timestamps, candidate_time)
-                in_window = right_idx - idx
-                if in_window < self.GLOBAL_LIMIT - 2:
-                    break
-                candidate_time = self._global_timestamps[idx] + self.GLOBAL_WINDOW
-
-            return max(0.0, candidate_time - current_time)
+        return self._rate_limiter.peek_delay(chat_id)
 
     def reserve_slot(self, chat_id: int) -> float:
         """Reserve a send slot and return the delay. Thread-safe."""
-        with self._rate_limit_lock:
-            current_time = time.time()
-            self._cleanup_old_timestamps()
+        return self._rate_limiter.reserve_slot(chat_id)
 
-            chat_delay = 0.0
-            chat_timestamps = self._chat_timestamps[chat_id]
-            if len(chat_timestamps) >= self.CHAT_LIMIT - 2:
-                safe_index = len(chat_timestamps) - (self.CHAT_LIMIT - 2)
-                reference_timestamp = chat_timestamps[safe_index]
-                chat_delay = max(0.0, (reference_timestamp + self.CHAT_WINDOW) - current_time)
+    def release_slot(self, chat_id: int) -> None:
+        """Release the latest reservation when a send did not happen."""
+        self._rate_limiter.release_slot(chat_id)
 
-            candidate_time = current_time + chat_delay
+    def get_chat_send_count(self, chat_id: int) -> int:
+        """Return this bot's current per-chat sliding-window send count."""
+        chat_count, _global_count = self._rate_limiter.get_counts(chat_id)
+        return chat_count
 
-            while True:
-                left_bound = candidate_time - self.GLOBAL_WINDOW
-                idx = bisect.bisect_right(self._global_timestamps, left_bound)
-                right_idx = bisect.bisect_right(self._global_timestamps, candidate_time)
-                in_window = right_idx - idx
-                if in_window < self.GLOBAL_LIMIT - 2:
-                    break
-                candidate_time = self._global_timestamps[idx] + self.GLOBAL_WINDOW
+    def get_chat_count_snapshot(self) -> Tuple[Dict[int, int], int]:
+        """Return current per-chat rate-limit occupancy for metrics."""
+        return self._rate_limiter.get_chat_count_snapshot()
 
-            delay = max(0.0, candidate_time - current_time)
-            bisect.insort(self._global_timestamps, candidate_time)
-            chat_timestamps.append(candidate_time)
-            return delay
+    def get_reserved_slot_count(self) -> int:
+        """Return current global sliding-window reservations for metrics."""
+        return self._rate_limiter.get_reserved_slot_count()
+
+    def get_known_member_chat_ids(self) -> set[int]:
+        """Return chat IDs where this bot is currently cached as a member."""
+        with self._membership_lock:
+            return {
+                chat_id
+                for chat_id, (is_member, _timestamp) in self._membership_cache.items()
+                if is_member
+            }
+
+    def get_membership_cache_snapshot(self) -> Dict[str, int]:
+        """Return membership cache counts without exposing chat IDs."""
+        with self._membership_lock:
+            member_count = sum(1 for is_member, _timestamp in self._membership_cache.values() if is_member)
+            not_member_count = sum(1 for is_member, _timestamp in self._membership_cache.values() if not is_member)
+            pending_count = len(self._pending_probes)
+        return {
+            "member": member_count,
+            "not_member": not_member_count,
+            "unknown_probe_pending": pending_count,
+        }
+
+    def bind_metrics(self, metrics) -> None:
+        self._metrics = metrics
+
+    def _record_membership_probe(self, outcome: str) -> None:
+        metrics = self._metrics
+        if metrics:
+            metrics.membership_probe(self.bot_id, self.username, outcome)
 
     # Tri-state membership results
     MEMBERSHIP_MEMBER = True
@@ -222,6 +284,7 @@ class AuxiliaryBot:
             time.sleep(0.05)
 
         logger.warning("Membership sync check timed out for bot %d in chat %d", self.bot_id, chat_id)
+        self._record_membership_probe("timeout")
         return False
 
     def update_membership(self, chat_id: int, is_member: bool):
@@ -247,20 +310,26 @@ class AuxiliaryBot:
     def _probe_membership(self, chat_id: int):
         """Background probe: call get_chat_member and update cache."""
         try:
-            member = self.bot.get_chat_member(chat_id, self.bot_id)
+            member: telegram.ChatMember = cast(
+                telegram.ChatMember,
+                _resolve_bot_result(self.async_bot.get_chat_member(chat_id, self.bot_id), self._runtime),
+            )
             is_member = member.status in ('member', 'administrator', 'creator', 'restricted')
             self.update_membership(chat_id, is_member)
+            self._record_membership_probe("ok_member" if is_member else "ok_not_member")
             logger.debug("Membership probe for bot %d in chat %d: %s (status=%s)",
                          self.bot_id, chat_id, is_member, member.status)
-        except telegram.error.Unauthorized:
-            self.disabled = True
-            self._disable_reason = "Unauthorized during membership probe"
-            logger.error("Auxiliary bot %d got Unauthorized during membership probe", self.bot_id)
+        except telegram.error.Forbidden:
+            self.update_membership(chat_id, False)
+            self._record_membership_probe("forbidden")
+            logger.warning("Membership probe for bot %d in chat %d got Forbidden", self.bot_id, chat_id)
         except telegram.error.BadRequest as e:
             self.update_membership(chat_id, False)
+            self._record_membership_probe("bad_request")
             logger.debug("Membership probe for bot %d in chat %d failed: %s", self.bot_id, chat_id, e)
         except Exception as e:
             self.update_membership(chat_id, False)
+            self._record_membership_probe("error")
             logger.warning("Membership probe failed for bot %d in chat %d: %s", self.bot_id, chat_id, e)
         finally:
             with self._membership_lock:
@@ -276,6 +345,13 @@ class AuxiliaryBot:
         self.disabled = True
         self._disable_reason = reason
         logger.error("Auxiliary bot @%s (id=%d) disabled: %s", self.username, self.bot_id, reason)
+
+    def bind_runtime(self, runtime: 'AsyncTelegramRuntime'):
+        """Bind the runtime-backed sync facade used by the rest of ETM."""
+        from .bot_manager import SyncBotFacade
+
+        self._runtime = runtime
+        self.bot = SyncBotFacade(self.async_bot, runtime)
 
     def __repr__(self):
         return f"AuxiliaryBot(@{self.username}, id={self.bot_id}, disabled={self.disabled})"

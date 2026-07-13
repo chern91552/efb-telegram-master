@@ -723,6 +723,11 @@ done by adjusting values ``request_kwargs`` section in ETM’s
        read_timeout: 6
        connect_timeout: 7
 
+For high queued-send throughput, ETM sizes the Telegram HTTPX connection
+pool from the send worker count. Set the environment variable
+``ETM_HTTPX_POOL_MULTIPLIER`` to a positive number to tune that pool size
+multiplier; the default is ``2.0``.
+
 Run ETM behind a proxy
 ----------------------
 
@@ -826,6 +831,13 @@ Development notes (CI and tooling)
   ETM can copy files into a shared directory derived from ``api_base_file_url``
   (when it is a ``file://`` URL) for better container/shared-filesystem
   compatibility.
+- **Remote image URLs from slave channels**: for Telegram-specific delivery,
+  slave channels may set ``msg.vendor_specific["blueset.telegram.image_url"]``
+  on ``MsgType.Image`` messages to an HTTP(S) image URL. ETM will pass the URL
+  to Telegram for server-side download instead of requiring ``msg.file`` and
+  ``msg.path``. If Telegram cannot download the URL on first send, ETM sends
+  an editable placeholder media message so a later media edit can replace it
+  with a reachable URL.
 
 License
 -------
