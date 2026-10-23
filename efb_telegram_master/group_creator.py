@@ -74,7 +74,7 @@ class GroupCreator:
         finally:
             db.close()
 
-    def _client(self):
+    def _client(self, *, request_retries=0):
         try:
             from telethon import TelegramClient
         except ImportError:
@@ -95,8 +95,8 @@ class GroupCreator:
         fd = os.open(str(self.session_path), os.O_CREAT | os.O_RDWR, 0o600)
         os.close(fd)
         return TelegramClient(str(self.session_path), int(api_id), str(api_hash),
-                              proxy=proxy, request_retries=0, connection_retries=1,
-                              flood_sleep_threshold=0, timeout=15)
+                              proxy=proxy, request_retries=request_retries, connection_retries=1,
+                              flood_sleep_threshold=0, timeout=15, raise_last_call_error=True)
 
     async def _check_owner(self, client):
         me = await client.get_me()
@@ -180,7 +180,9 @@ class GroupCreator:
 
     def login(self):
         async def perform_login():
-            client = self._client()
+            # Login may need to resend the request after a Telegram DC migration.
+            # Keep automatic retries disabled for group creation to avoid duplicates.
+            client = self._client(request_retries=5)
             try:
                 await client.start()
                 await self._check_owner(client)

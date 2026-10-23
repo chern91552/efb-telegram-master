@@ -50,6 +50,25 @@ def create(creator, request_id='first'):
     return creator.create('remote chat', request_id, 'Contact name', 'example_bot', 7)
 
 
+def test_login_allows_retries_and_disconnects(creator, monkeypatch):
+    client = AsyncMock()
+    client.get_me.return_value = SimpleNamespace(id=123, bot=False)
+    factory = Mock(return_value=client)
+    monkeypatch.setattr(creator, '_client', factory)
+    creator.login()
+    factory.assert_called_once_with(request_retries=5)
+    client.start.assert_awaited_once()
+    client.disconnect.assert_awaited_once()
+
+
+def test_creation_client_keeps_retries_disabled(creator, monkeypatch):
+    factory = Mock()
+    monkeypatch.setattr('telethon.TelegramClient', factory)
+    creator._client()
+    assert factory.call_args.kwargs['request_retries'] == 0
+    assert factory.call_args.kwargs['raise_last_call_error'] is True
+
+
 def creation_calls(client):
     return [c for c in client.call_args_list if isinstance(c.args[0], functions.channels.CreateChannelRequest)]
 
