@@ -627,6 +627,18 @@ class ChatBindingManager(LocaleMixin):
             if member.status not in ('administrator', 'creator'):
                 raise GroupCreationError('群已创建，但 Bot 管理员权限尚未生效，请稍后重试以复用原群。')
             self._link_chat_to_destination(chat, group, key, data, on_bound=on_bound)
+            # Binding returns only after the selected history policy has completed.
+            try:
+                channel = coordinator.slaves[chat.module_id]
+                self._update_linked_group_info(group.id, channel, chat.uid)
+                info_text = self._('Chat details updated.')
+            except EFBOperationNotSupported:
+                info_text = self._('群聊已绑定，名称和简介已更新，但远端未提供头像。可稍后发送 /update_info 重试。')
+            except Exception as exc:
+                self.logger.warning('Auto update group info failed for %s (%s)', remote_uid, type(exc).__name__)
+                info_text = self._('群聊已绑定，但更新群资料失败。请在新群发送 /update_info 重试，无需重新建群。')
+            with suppress(TelegramError):
+                self.bot.send_message(chat_id=group.id, text=info_text, disable_notification=True)
         except Exception as exc:
             # Report the failure without ever logging account/session secrets.
             self.logger.warning('Create-and-link failed for %s (%s)', remote_uid, type(exc).__name__)
@@ -1135,29 +1147,7 @@ class ChatBindingManager(LocaleMixin):
                                         .format(channel=channel_id))
         channel = coordinator.slaves[channel_id]
         try:
-            chat = self.chat_manager.update_chat_obj(channel.get_chat(chat_uid), full_update=True)
-
-            self.bot.set_chat_title(tg_chat.id, self.truncate_ellipsis(chat.chat_title, self.MAX_LEN_CHAT_TITLE))
-
-            desc, picture, pic_resized = self._get_chat_info_and_picture(chat, channel)
-
-            if desc:
-                try:
-                    self.bot.set_chat_description(
-                        tg_chat.id, self.truncate_ellipsis(desc, self.MAX_LEN_CHAT_DESC))
-                except BadRequest as e:
-                    if "Chat description is not modified" in e.message:
-                        pass
-                    else:
-                        self.logger.exception("Exception occurred while trying to update chat description: %s", e)
-                except TelegramError as e:  # description is not updated
-                    self.logger.exception("Exception occurred while trying to update chat description: %s", e)
-
-            if picture:
-                self.bot.set_chat_photo(tg_chat.id, pic_resized or picture)
-            else:
-                raise EFBOperationNotSupported()
-
+            self._update_linked_group_info(tg_chat.id, channel, chat_uid)
             update.effective_message.reply_text(self._('Chat details updated.'))
         except EFBChatNotFound:
             self.logger.exception("Chat linked (%s) is not found in the slave channel "
@@ -1176,6 +1166,34 @@ class ChatBindingManager(LocaleMixin):
             self.logger.exception("Unknown error caught when querying chat.")
             return self.bot.reply_error(update, self._('Error occurred while update chat details. \n'
                                                        '{0}'.format(e)))
+
+    def _update_linked_group_info(self, tg_chat_id: int, channel: SlaveChannel, chat_uid: ChatID):
+        """Shared title, description and photo update for /update_info and new groups."""
+        picture = pic_resized = None
+        try:
+            chat = self.chat_manager.update_chat_obj(channel.get_chat(chat_uid), full_update=True)
+
+            self.bot.set_chat_title(tg_chat_id, self.truncate_ellipsis(chat.chat_title, self.MAX_LEN_CHAT_TITLE))
+
+            desc, picture, pic_resized = self._get_chat_info_and_picture(chat, channel)
+
+            if desc:
+                try:
+                    self.bot.set_chat_description(
+                        tg_chat_id, self.truncate_ellipsis(desc, self.MAX_LEN_CHAT_DESC))
+                except BadRequest as e:
+                    if "Chat description is not modified" in e.message:
+                        pass
+                    else:
+                        self.logger.exception("Exception occurred while trying to update chat description: %s", e)
+                except TelegramError as e:  # description is not updated
+                    self.logger.exception("Exception occurred while trying to update chat description: %s", e)
+
+            if picture:
+                self.bot.set_chat_photo(tg_chat_id, pic_resized or picture)
+            else:
+                raise EFBOperationNotSupported()
+
         finally:
             if picture and getattr(picture, 'close', None):
                 picture.close()

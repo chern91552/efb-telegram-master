@@ -296,3 +296,58 @@ def test_notification_failure_after_binding_never_offers_recreation(binding):
     binding.group_creator.mark_bound.assert_called_once_with('remote')
     assert (123, 10) not in binding.msg_storage
     assert not binding.bot.edit_message_text.call_args.kwargs['reply_markup'].inline_keyboard
+
+
+@pytest.mark.parametrize('history_fails,info_fails', [(False, False), (True, False), (False, True)])
+def test_new_group_updates_info_after_history(binding, monkeypatch, history_fails, info_fails):
+    monkeypatch.setattr('efb_telegram_master.chat_binding.coordinator.get_module_by_id', lambda _: object())
+    channel = Mock()
+    monkeypatch.setattr('efb_telegram_master.chat_binding.coordinator.slaves', {'slave': channel})
+    chat, data = panel(binding)
+    binding.group_creator = Mock()
+    binding.group_creator.create.return_value = -100456
+    binding.bot.get_chat_info.return_value = SimpleNamespace(id=-100456, is_forum=False)
+    binding.bot.get_chat_member.return_value.status = 'administrator'
+    events = []
+
+    def history(*args):
+        events.append('history')
+        if history_fails:
+            raise RuntimeError()
+
+    def info(*args):
+        events.append('info')
+        if info_fails:
+            raise RuntimeError()
+
+    binding.migrate_chat_history.side_effect = history
+    binding._update_linked_group_info = Mock(side_effect=info)
+    binding._create_group_worker(chat, data, (123, 10), 'remote')
+    assert events == ['history', 'info']
+    binding._update_linked_group_info.assert_called_once_with(-100456, channel, chat.uid)
+    binding.group_creator.mark_bound.assert_called_once_with('remote')
+    assert (123, 10) not in binding.msg_storage
+    if info_fails:
+        assert '/update_info' in binding.bot.send_message.call_args.kwargs['text']
+
+
+@pytest.mark.parametrize('photo_fails', [False, True])
+def test_shared_info_update_refreshes_details_and_closes_pictures(binding, photo_fails):
+    channel = Mock()
+    chat = SimpleNamespace(chat_title='Updated name')
+    binding.chat_manager = Mock()
+    binding.chat_manager.update_chat_obj.return_value = chat
+    picture, resized = Mock(), Mock()
+    binding._get_chat_info_and_picture = Mock(return_value=('Updated description', picture, resized))
+    if photo_fails:
+        binding.bot.set_chat_photo.side_effect = RuntimeError()
+        with pytest.raises(RuntimeError):
+            binding._update_linked_group_info(-100456, channel, 'user')
+    else:
+        binding._update_linked_group_info(-100456, channel, 'user')
+    channel.get_chat.assert_called_once_with('user')
+    binding.bot.set_chat_title.assert_called_once_with(-100456, 'Updated name')
+    binding.bot.set_chat_description.assert_called_once_with(-100456, 'Updated description')
+    binding.bot.set_chat_photo.assert_called_once_with(-100456, resized)
+    picture.close.assert_called_once()
+    resized.close.assert_called_once()
