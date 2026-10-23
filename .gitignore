@@ -128,3 +128,6 @@ CLAUDE.md
 .claude/settings.local.json
 
 .venv/
+*.session
+*.session-journal
+group-creation.sqlite3*

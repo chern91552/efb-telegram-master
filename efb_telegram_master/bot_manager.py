@@ -1296,6 +1296,10 @@ class TelegramBotManager(LocaleMixin):
     def get_chat_info(self, *args, **kwargs):
         return self._bot.get_chat(*args, **kwargs)
 
+    def get_chat_member(self, *args, **kwargs):
+        """Inspect membership using the main bot, including newly created groups."""
+        return self._bot.get_chat_member(*args, **kwargs)
+
     @Decorators.retry_on_timeout
     @Decorators.retry_on_chat_migration
     def create_forum_topic(self, *args, **kwargs) -> ForumTopic:

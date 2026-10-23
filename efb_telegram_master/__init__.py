@@ -650,6 +650,7 @@ class TelegramChannel(MasterChannel):
     def stop_polling(self):
         self.logger.debug("Gracefully stopping %s (%s).", self.channel_name, self.channel_id)
         self.rpc_utilities.shutdown()
+        self.chat_binding.stop_group_creation()
         self.bot_manager.graceful_stop()
         self.master_messages.stop_worker()
         self.db.stop_worker()

@@ -7,8 +7,10 @@ import re
 import urllib.parse
 import threading
 import time
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from typing import Tuple, Dict, Optional, List, TYPE_CHECKING, IO, Union, Pattern
+from typing import Tuple, Dict, Optional, List, TYPE_CHECKING, IO, Union, Pattern, Callable, Set
 
 import telegram  # lgtm [py/import-and-import-from]
 from PIL import Image
@@ -19,6 +21,7 @@ from telegram.ext import ConversationHandler, CommandHandler, CallbackQueryHandl
     MessageHandler
 
 from ehforwarderbot import coordinator, Channel, MsgType
+from ehforwarderbot.utils import get_data_path
 from ehforwarderbot.channel import SlaveChannel
 from ehforwarderbot.chat import SystemChatMember
 from ehforwarderbot.exceptions import EFBChatNotFound, EFBOperationNotSupported
@@ -26,6 +29,7 @@ from ehforwarderbot.types import ModuleID, ChatID, MessageID
 from . import utils
 from .chat import ETMChatType, ETMGroupChat
 from .constants import Emoji, Flags
+from .group_creator import GroupCreator, GroupCreationError
 from .locale_mixin import LocaleMixin
 from .message import ETMMsg
 from .msg_type import TGMsgType
@@ -60,6 +64,7 @@ class ChatListStorage:
         # None = auto (backfill on first link, skip on relink)
         # True = always backfill, False = never backfill
         self.backfill_mode: Optional[bool] = None
+        self.creation_request_id = uuid.uuid4().hex
 
     @property
     def length(self) -> int:
@@ -103,6 +108,11 @@ class ChatBindingManager(LocaleMixin):
         self.db: 'DatabaseManager' = channel.db
         self.chat_manager: 'ChatObjectCacheManager' = channel.chat_manager
         self._topic_mutex = threading.Lock()
+        self.group_creator = GroupCreator(channel.config.get('group_creation', {}) or {},
+                                          get_data_path(channel.channel_id), channel.config['admins'][0])
+        self._group_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='ETM group creation')
+        self._group_jobs: Set[str] = set()
+        self._group_jobs_lock = threading.Lock()
 
         # Link handler
         non_edit_filter = Filters.update.message | Filters.update.channel_post
@@ -493,6 +503,9 @@ class ChatBindingManager(LocaleMixin):
                                              callback_data="manual_link 0"))
         buttons = [btn_list,
                    [InlineKeyboardButton(self._("Cancel"), callback_data=Flags.CANCEL_PROCESS)]]
+        if self.group_creator.enabled:
+            label = '新建群聊并重新绑定' if chat.linked else '新建群聊并绑定'
+            buttons.insert(1, [InlineKeyboardButton(self._(label), callback_data='create_group 0')])
 
         self.bot.edit_message_text(text=txt,
                                    chat_id=tg_chat_id,
@@ -513,6 +526,9 @@ class ChatBindingManager(LocaleMixin):
         tg_chat_id = TelegramChatID(update.effective_chat.id)
         tg_msg_id = TelegramMessageID(update.effective_message.message_id)
         callback_uid = update.callback_query.data
+
+        if callback_uid == 'create_group 0':
+            return self.create_group_and_link(update)
 
         if callback_uid == Flags.CANCEL_PROCESS:
             txt = self._("Cancelled.")
@@ -559,6 +575,80 @@ class ChatBindingManager(LocaleMixin):
         self.msg_storage.pop((tg_chat_id, tg_msg_id), None)
         return ConversationHandler.END
 
+    def create_group_and_link(self, update: Update) -> int:
+        """Acknowledge immediately; user-account calls run outside the dispatcher."""
+        query = update.callback_query
+        assert query and update.effective_chat and update.effective_message
+        if (not self.group_creator.enabled or not update.effective_user or
+                update.effective_user.id not in self.channel.config['admins'] or
+                update.effective_user.id != self.group_creator.owner_id or
+                update.effective_chat.type != telegram.Chat.PRIVATE):
+            query.answer(self._('请由建群账号本人在 Bot 私聊中操作。'), show_alert=True)
+            return Flags.LINK_EXEC
+        key = (TelegramChatID(update.effective_chat.id),
+               TelegramMessageID(update.effective_message.message_id))
+        data = self.msg_storage.get(key)
+        if data is None or len(data.chats) != 1:
+            query.answer(self._('操作已过期，请重新发送 /link。'), show_alert=True)
+            return ConversationHandler.END
+        chat = data.chats[0]
+        remote_uid = utils.chat_id_to_str(chat=chat)
+        with self._group_jobs_lock:
+            if self._group_jobs:
+                query.answer(self._('建群任务正在执行，请稍后重试。'), show_alert=True)
+                return Flags.LINK_EXEC
+            self._group_jobs.add(remote_uid)
+        try:
+            query.answer(self._('正在新建群聊并绑定…'))
+            self.bot.edit_message_text(chat_id=key[0], message_id=key[1],
+                                       text=self._('正在新建群聊并绑定，请稍候…'),
+                                       reply_markup=InlineKeyboardMarkup([]))
+            self._group_executor.submit(self._create_group_worker, chat, data, key, remote_uid)
+        except Exception:
+            with self._group_jobs_lock:
+                self._group_jobs.discard(remote_uid)
+            raise
+        return Flags.LINK_EXEC
+
+    def _create_group_worker(self, chat: ETMChatType, data: ChatListStorage,
+                             key: Tuple[TelegramChatID, TelegramMessageID], remote_uid: str):
+        bound = False
+
+        def on_bound():
+            nonlocal bound
+            bound = True
+            self.group_creator.mark_bound(remote_uid)
+
+        try:
+            group_id = self.group_creator.create(remote_uid, data.creation_request_id,
+                                                  chat.chat_title, self.bot.me.username, self.bot.me.id)
+            group = self.bot.get_chat_info(group_id)
+            member = self.bot.get_chat_member(group_id, self.bot.me.id)
+            if member.status not in ('administrator', 'creator'):
+                raise GroupCreationError('群已创建，但 Bot 管理员权限尚未生效，请稍后重试以复用原群。')
+            self._link_chat_to_destination(chat, group, key, data, on_bound=on_bound)
+        except Exception as exc:
+            # Report the failure without ever logging account/session secrets.
+            self.logger.warning('Create-and-link failed for %s (%s)', remote_uid, type(exc).__name__)
+            if bound:
+                text = self._('群聊已创建并绑定，后续通知或历史处理失败。请检查新群；无需再次建群。')
+                self.msg_storage.pop(key, None)
+                markup = InlineKeyboardMarkup([])
+            else:
+                detail = str(exc) if isinstance(exc, GroupCreationError) else self._('请检查 Bot 权限或网络后重试。')
+                text = self._('新建群聊并绑定未完成：') + detail
+                markup = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(self._('重试新建群聊并绑定'), callback_data='create_group 0')],
+                    [InlineKeyboardButton(self._('取消'), callback_data=Flags.CANCEL_PROCESS)]])
+            with suppress(TelegramError):
+                self.bot.edit_message_text(chat_id=key[0], message_id=key[1], text=text, reply_markup=markup)
+        finally:
+            with self._group_jobs_lock:
+                self._group_jobs.discard(remote_uid)
+
+    def stop_group_creation(self):
+        self._group_executor.shutdown(wait=True)
+
     def link_chat(self, update: Update, args: Optional[List[str]]):
         """Actual code of linking a chat by manipulating database.
         Triggered by ``/start BASE64(msg_id_to_str(chat_id, msg_id))``.
@@ -575,20 +665,6 @@ class ChatBindingManager(LocaleMixin):
             data = self.msg_storage[storage_key]
         except KeyError:
             return update.message.reply_text(self._("Session expired or unknown parameter. (SE02)"))
-        chat: ETMChatType = data.chats[0]
-        is_relink = chat.linked
-        chat_display_name = chat.full_name
-        slave_channel, slave_chat_uid = chat.module_id, chat.uid
-        chat_uid = utils.chat_id_to_str(slave_channel, slave_chat_uid)
-        try:
-            coordinator.get_module_by_id(slave_channel)
-        except NameError:
-            self.bot.edit_message_text(
-                text=self._("{module_id} is not activated in current profile. "
-                            "It cannot be linked.").format(module_id=slave_channel),
-                chat_id=storage_key[0],
-                message_id=storage_key[1])
-
         # Use channel ID if command is forwarded from a channel.
         forwarded_chat = update.effective_message.forward_from_chat
         if forwarded_chat and forwarded_chat.type == telegram.Chat.CHANNEL:
@@ -606,6 +682,27 @@ class ChatBindingManager(LocaleMixin):
                 backfill_override = True
             elif flag in ("false", "off", "no", "0"):
                 backfill_override = False
+
+        self._link_chat_to_destination(data.chats[0], tg_chat_to_link, storage_key, data, backfill_override)
+
+    def _link_chat_to_destination(self, chat: ETMChatType, tg_chat_to_link: telegram.Chat,
+                                  storage_key: Tuple[TelegramChatID, TelegramMessageID],
+                                  data: ChatListStorage, backfill_override: Optional[bool] = None,
+                                  on_bound: Optional[Callable[[], None]] = None):
+        """Shared persistence, topic cleanup and history policy for both entry points."""
+        is_relink = chat.linked
+        chat_display_name = chat.full_name
+        slave_channel, slave_chat_uid = chat.module_id, chat.uid
+        chat_uid = utils.chat_id_to_str(slave_channel, slave_chat_uid)
+        try:
+            coordinator.get_module_by_id(slave_channel)
+        except NameError:
+            self.bot.edit_message_text(
+                text=self._("{module_id} is not activated in current profile. "
+                            "It cannot be linked.").format(module_id=slave_channel),
+                chat_id=storage_key[0],
+                message_id=storage_key[1])
+            raise EFBChatNotFound('Remote channel is not active')
 
         txt = self._('Trying to link chat {0}...').format(chat_display_name)
         msg = self.bot.send_message(tg_chat_to_link.id, text=txt)
@@ -631,6 +728,9 @@ class ChatBindingManager(LocaleMixin):
                     self._update_single_topic_info(TelegramChatID(tg_chat_to_link.id), thread_id, chat_uid)
                 except Exception as e:
                     self.logger.warning("Auto update group info failed for %s: %s", chat_display_name, e)
+
+        if on_bound is not None:
+            on_bound()
 
         txt = self._("Chat {0} is now linked.").format(chat_display_name)
         self.bot.edit_message_text(text=txt, chat_id=msg.chat.id, message_id=msg.message_id)

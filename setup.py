@@ -53,7 +53,8 @@ setup(
     tests_require=tests_require,
     install_requires=[
         "ehforwarderbot>=2.0.0",
-        "setuptools==81.0.0; python_version>='3.9'",
+        # pkg_resources is used at runtime and was removed in setuptools 81.
+        "setuptools<81; python_version>='3.9'",
         "python-telegram-bot~=13.15",
         "urllib3<2", # used by python-telegram-bot 13.x
         # Python 3.13 removes the stdlib 'imghdr' module (PEP 594). Some deps
@@ -75,6 +76,7 @@ setup(
         "typing-extensions>=3.7.4.1",
     ],
     extras_require={
+        "group-creation": ["telethon>=1.40,<2", "PySocks"],
         "tests": tests_require,
         "tgs": [
             "lottie",

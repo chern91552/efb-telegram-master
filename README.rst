@@ -228,6 +228,16 @@ to BotFather for a command list::
     your behalf, but only the 0th admin can receive direct message from
     the bot.
 
+Create a new Telegram group while linking
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+This branch optionally adds a “新建群聊并绑定” button after selecting a chat
+with ``/link``. A separately authenticated Telegram user account creates a
+private, non-forum supergroup, adds the main bot, and binds the chat.
+Existing link buttons and per-type topic routing remain available.
+Disabled by default. See `setup, login and recovery instructions
+<docs/group-creation.md>`_ before enabling it.
+
 ``/link``: Link a chat
 ~~~~~~~~~~~~~~~~~~~~~~
 
