@@ -228,15 +228,130 @@ to BotFather for a command list::
     your behalf, but only the 0th admin can receive direct message from
     the bot.
 
-Create a new Telegram group while linking
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+新建群聊并绑定（feature/create-group-and-link）
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This branch optionally adds a “新建群聊并绑定” button after selecting a chat
-with ``/link``. A separately authenticated Telegram user account creates a
-private, non-forum supergroup, adds the main bot, and binds the chat.
-Existing link buttons and per-type topic routing remain available.
-Disabled by default. See `setup, login and recovery instructions
-<docs/group-creation.md>`_ before enabling it.
+本分支基于 ``topic-group-per-type``，在私聊 Bot 的 ``/link`` 选择会话后，
+增加「新建群聊并绑定」按钮；已有绑定时显示「新建群聊并重新绑定」。
+通过登录的 Telegram 用户账号创建独立、非话题的私有超级群，自动邀请主 Bot
+并授予管理员权限。功能默认关闭，原有绑定按钮、手动绑定和按类型分流继续可用。
+
+执行顺序：**新建群 → 绑定远端会话 → 处理历史消息 → 更新群名称、简介和头像**。
+最后一步复用 ``/update_info`` 的处理逻辑。首次绑定默认补发历史，重新绑定
+默认发送历史链接；沿用原有历史处理策略，并非每次重新绑定都补发。
+历史补发或资料更新失败不会撤销绑定；资料更新失败可在新群发送
+``/update_info`` 重试，无需重新建群。已经创建的群也可用此命令手动更新。
+
+安装或更新分支
+^^^^^^^^^^^^^^
+
+先停止 EFB，在运行 EFB 的同一个 Python 环境或虚拟环境执行。服务器只有
+``python3`` 命令时，以下步骤直接使用 ``python3``：
+
+.. code:: shell
+
+    python3 -m pip install --upgrade \
+      "efb-telegram-master[group-creation] @ git+https://github.com/chern91552/efb-telegram-master.git@feature/create-group-and-link"
+
+若已启用动态贴纸，将上面的 ``[group-creation]`` 改为
+``[group-creation,tgs]``，同时保留原有系统依赖。需要安装 Git；
+Debian/Ubuntu 可执行 ``sudo apt-get install git``（root 用户省略 ``sudo``）。
+
+检查实际安装来源（必须使用 EFB 对应的 Python 环境）：
+
+.. code:: shell
+
+    python3 - <<'PY'
+    import json
+    from importlib.metadata import distribution
+    d = distribution("efb-telegram-master")
+    info = json.loads(d.read_text("direct_url.json") or "{}")
+    vcs = info.get("vcs_info", {})
+    print("安装版本:", d.version)
+    print("安装位置:", d.locate_file(""))
+    print("仓库地址:", info.get("url", "未记录"))
+    print("安装分支:", vcs.get("requested_revision", "未记录"))
+    print("提交编号:", vcs.get("commit_id", "未记录"))
+    PY
+
+分支应为 ``feature/create-group-and-link``，仓库应为
+``https://github.com/chern91552/efb-telegram-master.git``。
+版本号不能单独证明分支正确；提交编号会随更新变化。
+源码可编辑安装时也需在源码目录用 ``git branch --show-current`` 和
+``git rev-parse HEAD`` 检查。
+
+配置
+^^^^
+
+编辑 ETM 的 ``config.yaml``，默认位置为
+``~/.ehforwarderbot/profiles/default/blueset.telegram/config.yaml``。
+``group_creation`` 必须放在最外层，与 ``token``、``admins``、``flags`` 同级：
+
+.. code:: yaml
+
+    token: "你的 Bot Token"
+    admins:
+      - 123456789
+
+    group_creation:
+      enabled: true
+      api_id: 123456
+      api_hash: "你的 api_hash"
+      # owner_id: 123456789  # 可省略，默认使用 admins 的第一个用户
+
+    flags:
+      # 保留你现有的 topic_group 和其他 flags
+      send_to_last_chat: "enabled"
+
+从 https://my.telegram.org/apps 获取 ``api_id`` 和 ``api_hash``。
+建群需要 Telegram 用户账号授权，仅有 Bot Token 不够。
+如果指定 ``owner_id``，该用户也必须在 ``admins`` 中。
+独立群绑定优先于默认话题群，未单独绑定的会话继续按 ``topic_group`` 分流。
+旧项目的 ``tg_mp``、``auto_manage_tg_config`` 不用于启用此功能。
+
+首次登录与启动
+^^^^^^^^^^^^^^
+
+保持 EFB 停止，使用运行 EFB 的同一个系统用户执行：
+
+.. code:: shell
+
+    python3 -m efb_telegram_master.group_creator \
+      --config "$HOME/.ehforwarderbot/profiles/default/blueset.telegram/config.yaml" \
+      --data-dir "$HOME/.ehforwarderbot/profiles/default/blueset.telegram" \
+      --login
+
+自定义 profile 或数据目录时替换两个路径，``--data-dir`` 必须与 EFB
+实际使用的频道数据目录一致。按提示输入手机号、验证码和两步验证密码（如有），
+登录账号必须对应 ``owner_id``，未指定时对应 ``admins`` 的第一个用户。
+手机号提示虽然包含 bot token 字样，这里仍需登录用户账号。
+
+授权保存到 ``group-creator.session``，正常重启无需重复登录。
+然后按原来的方式启动 EFB，在 Bot 私聊发送 ``/link``，选中用户或群，
+点击「新建群聊并绑定」，等待历史处理和资料更新完成。
+只有指定的建群管理员可在私聊执行；主 Bot 必须允许加入群。
+辅助 Bot 不会自动加入新群。
+
+Docker / 1Panel 部署时，上述安装、检查和登录需在 EFB 所在容器环境执行；
+长期使用应将分支安装命令加入镜像构建配置，并持久化频道数据目录，避免重建
+容器后丢失安装和登录状态。config、session 与建群状态记录应妥善保存，不要公开。
+
+常见问题与本分支修复
+^^^^^^^^^^^^^^^^^^^^
+
+- ``python: command not found``：使用 ``python3``。
+- 没有新建按钮：检查运行环境、安装分支，以及顶层
+  ``group_creation.enabled: true``，修改后重启 EFB。
+- 登录报 ``Request was unsuccessful 1 time(s)``：早期实现关闭请求重试，
+  登录遇到数据中心切换等情况可能失败。已单独允许登录重试，并显示底层错误；
+  更新本分支后重新登录即可尝试修复，不必先删除 session。
+- ``pkg_resources`` 弃用警告和模块预加载的 ``RuntimeWarning`` 本身不代表
+  登录失败；若退出，应查看最后的异常信息。
+- 群已绑定但头像或名称更新失败：检查 Bot 管理员权限，在新群执行
+  ``/update_info``。远端没有提供头像时无法同步头像。
+- 建群结果不确定时，不要反复清除记录重建；先检查 Telegram 是否已经建群。
+  重试复用已有群、代理设置及状态恢复步骤见
+  `完整建群说明 <docs/group-creation.md>`_。
 
 ``/link``: Link a chat
 ~~~~~~~~~~~~~~~~~~~~~~

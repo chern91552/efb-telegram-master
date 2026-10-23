@@ -4,10 +4,19 @@
 
 ## 安装与配置
 
-在本分支仓库目录、运行 EFB 的同一 Python 环境安装：
+先停止 EFB，在运行 EFB 的同一 Python 环境安装或更新：
 
 ```bash
-python -m pip install -e '.[group-creation]'
+python3 -m pip install --upgrade \
+  "efb-telegram-master[group-creation] @ git+https://github.com/chern91552/efb-telegram-master.git@feature/create-group-and-link"
+```
+
+启用动态贴纸时使用 `[group-creation,tgs]`。完整配置示例、安装来源检查及容器注意事项见 [README](../README.rst)。
+
+开发者也可以在本分支源码目录执行可编辑安装：
+
+```bash
+python3 -m pip install -e '.[group-creation]'
 ```
 
 在 ETM 的 `config.yaml` 增加以下**顶层配置**（与 `token`、`admins` 同级，不放进 `flags`）：
@@ -35,7 +44,7 @@ group_creation:
 停止 EFB 后，在终端执行以下命令。替换实际路径；`--data-dir` 必须与 EFB 实际使用的 **blueset.telegram 频道数据目录**一致。默认 profile 通常如下，自定义 profile、实例或 `EFB_DATA_PATH` 请使用对应目录：
 
 ```bash
-python -m efb_telegram_master.group_creator \
+python3 -m efb_telegram_master.group_creator \
   --config "$HOME/.ehforwarderbot/profiles/default/blueset.telegram/config.yaml" \
   --data-dir "$HOME/.ehforwarderbot/profiles/default/blueset.telegram" \
   --login
@@ -67,7 +76,7 @@ python -m efb_telegram_master.group_creator \
 遇到「结果不确定」，先检查 Telegram 是否已建好群。已建好时可将 Bot 加入并通过原有「手动绑定」完成绑定。确认不存在重复建群风险后，**停止 EFB**，使用报错中的完整远端标识清除本地记录：
 
 ```bash
-python -m efb_telegram_master.group_creator \
+python3 -m efb_telegram_master.group_creator \
   --config /absolute/path/to/config.yaml \
   --data-dir /absolute/path/to/blueset.telegram \
   --forget-pending '远端标识'
